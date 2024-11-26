@@ -1,0 +1,186 @@
+Here’s a complete walkthrough of the code with detailed explanations of each part, followed by the documentation for the Receipt Processor API.
+
+Code Walkthrough
+Code Structure
+Global Variables
+var (
+    receipts = make(map[string]Receipt)
+    mu       sync.Mutex
+)
+receipts: A global in-memory map to store receipt data. Keys are ids, and values are the Receipt objects.
+mu: A sync.Mutex to ensure thread-safe operations on the receipts map.
+Main Function
+func main() {
+    http.HandleFunc("/receipts/process", processReceiptHandler)
+    http.HandleFunc("/receipts/", getPointsHandler)
+
+    fmt.Println("Server running on port 8080...")
+    http.ListenAndServe(":8080", nil)
+}
+Registers two HTTP endpoints:
+/receipts/process: Handles POST requests for processing receipts.
+/receipts/{id}/points: Handles GET requests for retrieving points.
+Starts the HTTP server on port 8080.
+POST /receipts/process Endpoint
+Handler: processReceiptHandle
+func processReceiptHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+        return
+    }
+
+    var receipt Receipt
+    if err := json.NewDecoder(r.Body).Decode(&receipt); err != nil {
+        http.Error(w, "Invalid receipt format", http.StatusBadRequest)
+        return
+    }
+
+    id := uuid.New().String()
+    mu.Lock()
+    receipts[id] = receipt
+    mu.Unlock()
+
+    response := ReceiptResponse{ID: id}
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+Step 1: Checks if the request method is POST. If not, it responds with 405 Method Not Allowed.
+Step 2: Decodes the JSON body of the request into a Receipt struct.
+Step 3: Generates a unique ID using the uuid package.
+Step 4: Stores the receipt in the receipts map with the id as the key (thread-safe with sync.Mutex).
+Step 5: Sends the id as a JSON response.
+Example Request:
+
+{
+  "retailer": "Target",
+  "purchaseDate": "2022-01-01",
+  "purchaseTime": "13:01",
+  "total": "35.35",
+  "items": [
+    { "shortDescription": "Mountain Dew 12PK", "price": "6.49" },
+    { "shortDescription": "Emils Cheese Pizza", "price": "12.25" }
+  ]
+}
+Example Response:
+
+{ "id": "123e4567-e89b-12d3-a456-426614174000" }
+GET /receipts/{id}/points Endpoint
+Handler: getPointsHandle
+func getPointsHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodGet {
+        http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+        return
+    }
+
+    id := strings.TrimPrefix(r.URL.Path, "/receipts/")
+    mu.Lock()
+    receipt, exists := receipts[id]
+    mu.Unlock()
+
+    if !exists {
+        http.Error(w, "Receipt not found", http.StatusNotFound)
+        return
+    }
+
+    points := calculatePoints(receipt)
+    response := PointsResponse{Points: points}
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+Step 1: Checks if the request method is GET. If not, responds with 405 Method Not Allowed.
+Step 2: Extracts the id from the URL path.
+Step 3: Retrieves the receipt from the receipts map. If the id does not exist, responds with 404 Not Found.
+Step 4: Calculates points for the receipt using the calculatePoints function.
+Step 5: Sends the total points as a JSON response.
+Example Request:
+
+GET /receipts/123e4567-e89b-12d3-a456-426614174000/points
+Example Response:
+
+{ "points": 28 }
+Points Calculation Logic
+Function: calculatePoint
+func calculatePoints(receipt Receipt) int {
+    points := 0
+
+    // Rule 1: 1 point for every alphanumeric character in the retailer name
+    points += len(regexp.MustCompile(`[a-zA-Z0-9]`).FindAllString(receipt.Retailer, -1))
+
+    // Rule 2: 50 points if the total is a round dollar amount
+    total, _ := strconv.ParseFloat(receipt.Total, 64)
+    if total == float64(int(total)) {
+        points += 50
+    }
+
+    // Rule 3: 25 points if the total is a multiple of 0.25
+    if math.Mod(total, 0.25) == 0 {
+        points += 25
+    }
+
+    // Rule 4: 5 points for every two items
+    points += (len(receipt.Items) / 2) * 5
+
+    // Rule 5: Points for items with descriptions of length multiple of 3
+    for _, item := range receipt.Items {
+        descLen := len(strings.TrimSpace(item.ShortDescription))
+        if descLen%3 == 0 {
+            price, _ := strconv.ParseFloat(item.Price, 64)
+            points += int(math.Ceil(price * 0.2))
+        }
+    }
+
+    // Rule 6: 6 points if the day in the purchase date is odd
+    day, _ := strconv.Atoi(strings.Split(receipt.PurchaseDate, "-")[2])
+    if day%2 != 0 {
+        points += 6
+    }
+
+    // Rule 7: 10 points if the time is between 2:00 PM and 4:00 PM
+    timeParts := strings.Split(receipt.PurchaseTime, ":")
+    hour, _ := strconv.Atoi(timeParts[0])
+    minute, _ := strconv.Atoi(timeParts[1])
+    if hour == 14 || (hour == 15 && minute < 60) {
+        points += 10
+    }
+
+    return points
+}
+Points Calculation:
+Retailer Name: Counts alphanumeric characters.
+Total: Checks if the total is a round dollar or multiple of 0.25.
+Items: Points for description length and pair counts.
+Date: Odd days award extra points.
+Time: Awards extra points for purchases between 2:00 PM and 4:00 PM.
+Full Documentation
+Endpoints
+POST /receipts/process
+
+Request Body: Receipt JSON.
+Response: JSON with the generated id.
+GET /receipts/{id}/points
+
+Path Parameter: id (Receipt ID).
+Response: JSON with the total points awarded.
+Running the Application
+Install Dependencies:
+
+
+go mod init receipt-processor
+go get github.com/google/uuid
+Run the Server:
+
+
+go run main.go
+Test with cURL:
+
+Submit a Receipt:
+
+
+curl -X POST http://localhost:8080/receipts/process \
+-H "Content-Type: application/json" \
+-d '{"retailer":"Target","purchaseDate":"2022-01-01","purchaseTime":"13:01","total":"35.35","items":[{"shortDescription":"Mountain Dew 12PK","price":"6.49"}]}'
+Get Points:
+
+
+curl -X GET http://localhost:8080/receipts/{id}/points
+Replace {id} with the ID returned from the POST request.
